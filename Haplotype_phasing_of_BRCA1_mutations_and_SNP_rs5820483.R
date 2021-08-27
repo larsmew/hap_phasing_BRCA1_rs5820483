@@ -13,24 +13,25 @@ library(proxy)
 # Should contain samples as rows and snps as columns,
 # and genotypes (0,1,2) as values
 geno_data <- read.table("geno.txt", header = T) 
-
-
-pheno_data <- read.table("pheno.txt", header = T) # 
+# Should contain patient ID (Onc_ID) and mutation info (Mut1HGVS)
+pheno_data <- read.table("pheno.txt", header = T) 
+# Should contain SNP, chr, pos
 snp_coords <- read.table("snp_coords_chr17.txt", header = T) # 
 
 # BRCA mutation coordinates
 brca1_mutation_coords <- read.table("input/139_ouh_june_2017/BRCA1_mut_position.txt", header = T, sep = "\t")
 
-
+# Determine the size of the BRCA1 mutation and record the start, end, and middle position
 getBRCA1info <- function(mut){
     mut_start <<- brca1_mutation_coords[which(brca1_mutation_coords$Mut1HGVS == mut), 2]
     mut_stop <<- brca1_mutation_coords[which(brca1_mutation_coords$Mut1HGVS == mut), 3]
     mut_middle <<- (mut_stop - mut_start)/2 + mut_start
 }
 
-extractSamples <- function(pheno, geno, chr_coords){
+# Extract subset of genotypes, described in pheno_subset
+extractGenotypes <- function(pheno_subset, geno, chr_coords){
 
-    # Extract samples with given brca mutation
+    # Extract samples with given BRCA1 mutation
     index <- match(pheno$Onc_ID, geno$SNP)
     matched <- geno[index, ]
     
@@ -46,8 +47,8 @@ firstBreakDist <- function(geno, pheno, snp_coords){
     
     getSnpDist <- function(snp_coords, geno){
         snp_dist = filter(snp_coords, SNP %in% names(geno)) %>%
-            arrange(position_b37) %>%
-            mutate(brca_distance = as.integer(as.character(position_b37)) - mut_middle)
+            arrange(pos) %>%
+            mutate(brca_distance = as.integer(as.character(pos)) - mut_middle)
         return(snp_dist)
     }
     
@@ -71,7 +72,7 @@ firstBreakDist <- function(geno, pheno, snp_coords){
     snp_dist <<- getSnpDist(snp_coords, geno)
     # Exclude SNPs in mutation, likely not any
     if (removeSNPsInGene){
-        snp_dist.dist <<- filter(snp_dist, position_b37 < mut_start | position_b37 > mut_stop)
+        snp_dist.dist <<- filter(snp_dist, pos < mut_start | pos > mut_stop)
     }
     # Define position splitting snps on either side of BRCA mutation
     snp.split.left <<- nrow(filter(snp_dist, brca_distance <= 0))
@@ -105,7 +106,7 @@ result <- map_dfr(.x = brca1_muts$Mut1HGVS, .f = function(mut){
     # subset pheno info
     pheno_subset <<- filter(pheno_data, Mut1HGVS %in% mut)
     # subset geno data
-    geno_subset = extractSamples(pheno_subset, geno_data, chr_coords)
+    geno_subset = extractGenotypes(pheno_subset, geno_data, chr_coords)
     n_samples = nrow(geno_subset)
     
     ## Split the carriers into groups assumed to descend from a common ancestor (founder)
