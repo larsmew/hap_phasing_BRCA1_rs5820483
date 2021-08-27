@@ -4,10 +4,9 @@
 # trans with the imputed SNP rs455055 (that is in strong linkage disequilibrium 
 # (LD) with SNP rs5820483) by haplotype phasing a set of genotyped SNPs.
 
+# Load necessary libraries
 library(tidyverse)
 library(proxy)
-
-setwd("~/Documents/PhD/haplotype-project/")
 
 # Read data
 
@@ -22,19 +21,11 @@ snp_coords <- read.table("snp_coords_chr17.txt", header = T) #
 # BRCA mutation coordinates
 brca1_mutation_coords <- read.table("input/139_ouh_june_2017/BRCA1_mut_position.txt", header = T, sep = "\t")
 
-# geno_data <- read.table("pujana/38_Pujana_OD7-BRCA1/38_brca1_plink_format.txt", header = T)
-# pheno_data <- read.table("pujana/38_Pujana_OD7-BRCA1/iCOGS_pheno_export_B1_261112.txt", header = T, sep = "\t", quote = "", fill = T, stringsAsFactors = F)
-# snp_coords = read.table("pujana/38_Pujana_OD7-BRCA1/38_pujana_coords.txt", header = T) %>% arrange(position_b37)
-# dosage = read.csv("pujana/38_Pujana_OD7-BRCA1/brca1_chr17_41165k_41355k_dosages_filtered.csv", header = T)
-# dosage$chr17.41247122.I
-
 
 getBRCA1info <- function(mut){
-    gene <<- "BRCA1"
     mut_start <<- brca1_mutation_coords[which(brca1_mutation_coords$Mut1HGVS == mut), 2]
     mut_stop <<- brca1_mutation_coords[which(brca1_mutation_coords$Mut1HGVS == mut), 3]
-    mut_middle <<- (brca_stop - brca_start)/2 + brca_start
-    brca_chr <<- 17
+    mut_middle <<- (mut_stop - mut_start)/2 + mut_start
 }
 
 extractSamples <- function(pheno, geno, chr_coords){
@@ -98,11 +89,16 @@ firstBreakDist <- function(geno, pheno, snp_coords){
 #   2: homozygous ALT
 genotype_description = c("2"="homref","1"="het","0"="homalt")
 
+# List the mutations and number of carriers
 brca1_muts <- count(pheno_individual, Mut1HGVS) %>% arrange(desc(n))
 
+# cutoff for separating carriers into different groups assumed to descend from a common ancestor (founder)
 height_cutoff = 7
 
-
+# First we cluster the carriers into its respective founder group i.e. 
+# carriers with a mutation descending from a common ancestor,
+# then determine the phasing between the rs455055 SNP and the BRCA1 mutation
+# for each founder group.
 result <- map_dfr(.x = brca1_muts$Mut1HGVS, .f = function(mut){
     getBRCA1info(mut)
     
@@ -112,26 +108,35 @@ result <- map_dfr(.x = brca1_muts$Mut1HGVS, .f = function(mut){
     geno_subset = extractSamples(pheno_subset, geno_data, chr_coords)
     n_samples = nrow(geno_subset)
     
+    ## Split the carriers into groups assumed to descend from a common ancestor (founder)
+    # We assume mutations with less than 3 carriers inherited the BRCA1 mutation from the same founder
     if (n_samples < 3){
         pheno_subset$cluster_groups = 1
         k = 1
+    # Otherwise, cluster data
     } else {
-        dir.create("distMatrices", showWarnings = F)
-        dst <- firstBreakDist(fam=fam, matched_custom = geno_subset,
-                              filename = paste0("distMatrices/dist_",mut_name,".RData"))
+        # Perform hierarchical clustering
+        dst <- firstBreakDist(geno_subset, pheno_subset, snp_coords)
         hc <- hclust(dst,"ward.D2")
+        # Determine groups (k) using height of the dendrogram and cutoff
         k = sum(hc$height>height_cutoff)+1
+        # If number of groups above number of samples, then group each carrier
+        # into its own group
         if (k>n_samples){
             cluster_groups <<- cutree(hc, n_samples)
             pheno_subset$cluster_groups <- cluster_groups
             k = n_samples
+        # Otherwise, split into k groups
         } else {
             cluster_groups <<- cutree(hc, k)
             pheno_subset$cluster_groups <- cluster_groups
         }
+        # Make the variable global - dirty hack
         pheno_subset <<- pheno_subset
     }
     
+    # Determine the phase of the rs455055 SNP and the BRCA1 mutation for 
+    # each founder group 
     result = map_dfr(1:k, function(founder_group){
         geno_founder = geno_subset[geno_subset$SNP %in% subset(pheno_subset, cluster_groups == founder_group)$Onc_ID,]
         
@@ -141,6 +146,7 @@ result <- map_dfr(.x = brca1_muts$Mut1HGVS, .f = function(mut){
         het = sum(geno_founder$rs455055 == 1)
         homalt = sum(geno_founder$rs455055 == 0)
         
+        # Set up resulting data frame
         res = data.frame("ICOGS_Person_ID"=geno_founder$SNP, "Mutation"=mut, 
                          "Founder"=founder_group,"Homref"=homref,
                          "Het"=het,"Homalt"=homalt)
@@ -177,6 +183,7 @@ result <- map_dfr(.x = brca1_muts$Mut1HGVS, .f = function(mut){
     })
     return(result)
 })
+# Write results to files
 summary_table = result %>% count(Mutation,Founder,Splicing,Homref,Het,Homalt, name = "Num_samples")
 write.table(result[,c(1:3,7)], file = paste0("output/Splicing_brca1_rs455055_withFounderAnalysis.txt"), quote = F, row.names = F, sep = "\t")
 write.table(summary_table, file = paste0("output/Summary_splicing_brca1_rs455055_withFounderAnalysis.txt"), quote = F, row.names = F, sep = "\t")
